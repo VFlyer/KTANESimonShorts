@@ -14,19 +14,26 @@ public class SimonShortsScript : MonoBehaviour
     public MeshFilter[] Wires, LongWires;
     public KMSelectable[] Buttons;
     public Renderer[] ButtonRenderers;
+    public ButtonPressAnim[] PressAnims;
     public Color[] ButtonColors;
+    public string[] ColorNameRef;
     public GameObject Spark;
     public KMBombModule Module;
-    public KMAudio Audio;
+    public KMAudio mAudio;
+    public TextMesh[] colorblindTexts;
+    public KMColorblindMode colorblindMode;
 
     private static int _idc;
-    private int _id = ++_idc, _stage, _pressesEntered;
+    private int _id, _pressesEntered, stagesRequired;
     private List<Vector3[]> _paths = new List<Vector3[]>();
     private List<Transform> _pathParents = new List<Transform>();
     private Color[] _usedColors;
+    private string[] _usedColorNameRef;
     private List<Dir[]> _animations = new List<Dir[]>();
     private List<Dir> _expectedPresses = new List<Dir>();
-    private bool _isSolved;
+    private bool _isSolved, interactable, flasherRunning, colorblindDetected, playSounds;
+    private float cooldown;
+    IEnumerator flashRunner;
 
     private void Awake()
     {
@@ -45,69 +52,117 @@ public class SimonShortsScript : MonoBehaviour
             _paths.Add(be.Select(p => new Vector3((float)p.X, (float)p.Y, (float)p.Z)).ToArray());
             _pathParents.Add(wire.transform);
         }
+        try
+        {
+            colorblindDetected = colorblindMode.ColorblindModeActive;
+        }
+        catch
+        {
+            colorblindDetected = false;
+        }
+
     }
 
+    Dir ToDir(int value)
+    {
+        switch (value)
+        {
+            case 0:
+            default:
+                return Dir.Up;
+            case 1:
+                return Dir.Left;
+            case 2:
+                return Dir.Right;
+            case 3:
+                return Dir.Down;
+        }
+    }
+    int ToIntFromDir(Dir value)
+    {
+        switch (value)
+        {
+            case Dir.Up:
+            default:
+                return 0;
+            case Dir.Left:
+                return 1;
+            case Dir.Right:
+                return 2;
+            case Dir.Down:
+                return 3;
+        }
+    }
+    void Update()
+    {
+        if (!interactable) return;
+        if (cooldown > 0)
+        {
+            cooldown -= Time.deltaTime;
+            return;
+        }
+        if (_pressesEntered > 0)
+        {
+            Debug.LogFormat("[Simon Shorts #{0}] Inputs have been reset after {1} correct press(es). Please reinput the sequence again.", _id, _pressesEntered);
+            _pressesEntered = 0;
+        }
+        if (!flasherRunning)
+        {
+            flasherRunning = true;
+            flashRunner = RunFlashes();
+            StartCoroutine(flashRunner);
+        }
+    }
     private void Start()
     {
-        Buttons[0].OnInteract += () => { Audio.PlaySoundAtTransform("Up", Buttons[0].transform); Buttons[0].AddInteractionPunch(.3f); Press(Dir.Up); return false; };
-        Buttons[1].OnInteract += () => { Audio.PlaySoundAtTransform("Down", Buttons[1].transform); Buttons[1].AddInteractionPunch(.3f); Press(Dir.Left); return false; };
-        Buttons[2].OnInteract += () => { Audio.PlaySoundAtTransform("Left", Buttons[2].transform); Buttons[2].AddInteractionPunch(.3f); Press(Dir.Right); return false; };
-        Buttons[3].OnInteract += () => { Audio.PlaySoundAtTransform("Right", Buttons[3].transform); Buttons[3].AddInteractionPunch(.3f); Press(Dir.Down); return false; };
+        _id = ++_idc;
 
-        _usedColors = new Color[ButtonColors.Length];
-        ButtonColors.CopyTo(_usedColors, 0);
-        _usedColors.Shuffle();
+        for (var x = 0; x < Buttons.Length; x++)
+        {
+            var y = x;
+            Buttons[x].OnInteract += delegate {
+                PressAnims[y].ButtonPush();
+                mAudio.PlaySoundAtTransform(ToDir(y).ToString(), Buttons[y].transform);
+                Buttons[y].AddInteractionPunch(.3f);
+                if (interactable)
+                    Press(ToDir(y));
+                return false;
 
-        for(int i = 0; i < ButtonRenderers.Length; i++)
+            };
+        }
+        var shuffledIdxes = Enumerable.Range(0, 4).ToArray().Shuffle();
+
+        _usedColors = shuffledIdxes.Select(a => ButtonColors[a]).ToArray();
+        _usedColorNameRef = shuffledIdxes.Select(a => ColorNameRef[a]).ToArray();
+
+        Debug.LogFormat("[Simon Shorts #{0}] Buttons' color displayed (in order: Up, Left, Right, Down): {1}", _id, _usedColorNameRef.Join(", "));
+
+        for (int i = 0; i < ButtonRenderers.Length; i++)
             ButtonRenderers[i].material.color = _usedColors[i];
 
-        StartCoroutine(RunFlashes());
+        flashRunner = RunFlashes();
+        stagesRequired = RNG.Range(3, 6);
+        Debug.LogFormat("[Simon Shorts #{0}] Required stages completed to disarm the module: {1}", _id, stagesRequired);
+        Module.OnActivate += () => {AddStage(); StartCoroutine(flashRunner); interactable = true; HandleColorblindMode(); };
+    }
 
-        Module.OnActivate += () => { _stage = 1; };
+    void HandleColorblindMode()
+    {
+        for (var x = 0; x < colorblindTexts.Length; x++)
+        {
+            colorblindTexts[x].text = colorblindDetected ? _usedColorNameRef[x] : "";
+        }
     }
 
     private IEnumerator RunFlashes()
     {
-        while(_stage < 1)
-            yield return null;
-
-        AddStage();
-
-        while(_stage < 2)
+        for (var x = 0; x < _animations.Count; x++)
         {
-            yield return MakeAnimate(_animations[0][0], _animations[0][1]);
-            yield return new WaitForSeconds(1f);
+            yield return new WaitForSeconds(0.5f);
+            yield return MakeAnimate(_animations[x][0], _animations[x][1]);
         }
-
-        AddStage();
-
-        while(_stage < 3)
-        {
-            yield return MakeAnimate(_animations[0][0], _animations[0][1]);
-            yield return MakeAnimate(_animations[1][0], _animations[1][1]);
-            yield return new WaitForSeconds(1f);
-        }
-
-        AddStage();
-
-        while(_stage < 4)
-        {
-            yield return MakeAnimate(_animations[0][0], _animations[0][1]);
-            yield return MakeAnimate(_animations[1][0], _animations[1][1]);
-            yield return MakeAnimate(_animations[2][0], _animations[2][1]);
-            yield return new WaitForSeconds(1f);
-        }
-
-        AddStage();
-
-        while(_stage < 5)
-        {
-            yield return MakeAnimate(_animations[0][0], _animations[0][1]);
-            yield return MakeAnimate(_animations[1][0], _animations[1][1]);
-            yield return MakeAnimate(_animations[2][0], _animations[2][1]);
-            yield return MakeAnimate(_animations[3][0], _animations[3][1]);
-            yield return new WaitForSeconds(1f);
-        }
+        cooldown = 3f;
+        flasherRunning = false;
     }
 
     private void AddStage()
@@ -117,21 +172,33 @@ public class SimonShortsScript : MonoBehaviour
 
         _animations.Add(new Dir[] { from, to });
 
-        Debug.LogFormat("[Simon Shorts #{0}] The next flash is {1} ({2}) to {3} ({4}).", _id, from, _usedColors[(int)from], to, _usedColors[(int)to]);
+        Debug.LogFormat("[Simon Shorts #{0}] Stage {5}'s flash is {1} ({2}) to {3} ({4}).", _id, from, _usedColorNameRef[(int)from], to, _usedColorNameRef[(int)to], _animations.Count);
 
         Color[] c = new int[] { 0, 3, 1, 2 }.Select(i => ButtonColors[i]).ToArray();
-        if(from == Dir.Right && to == Dir.Left || from == Dir.Up && to == Dir.Right || from == Dir.Left && to == Dir.Down)
+        if (from == Dir.Right && to == Dir.Left || from == Dir.Up && to == Dir.Right || from == Dir.Left && to == Dir.Down)
+        {
             _expectedPresses.Add((Dir)Array.IndexOf(c, _usedColors[(int)from]));
-        else if(from == Dir.Left && to == Dir.Right || from == Dir.Right && to == Dir.Up || from == Dir.Down && to == Dir.Left)
+            Debug.LogFormat("[Simon Shorts #{0}] Using the diagram, the flashing color is used to obtain this press, which corresponds to {1}", _id, (Dir)Array.IndexOf(c, _usedColors[(int)from]));
+        }
+        else if (from == Dir.Left && to == Dir.Right || from == Dir.Right && to == Dir.Up || from == Dir.Down && to == Dir.Left)
+        {
             _expectedPresses.Add((Dir)Array.IndexOf(c, _usedColors[(int)to]));
-        else if(from == Dir.Up && to == Dir.Down || from == Dir.Left && to == Dir.Up || from == Dir.Down && to == Dir.Right)
+            Debug.LogFormat("[Simon Shorts #{0}] Using the diagram, the flashing button is used to obtain this press, which corresponds to  {1}", _id, (Dir)Array.IndexOf(c, _usedColors[(int)to]));
+        }
+        else if (from == Dir.Up && to == Dir.Down || from == Dir.Left && to == Dir.Up || from == Dir.Down && to == Dir.Right)
+        {
             _expectedPresses.Add(to);
-        else if(from == Dir.Down && to == Dir.Up || from == Dir.Up && to == Dir.Left || from == Dir.Right && to == Dir.Down)
+            Debug.LogFormat("[Simon Shorts #{0}] Using the diagram, the position of the flash is used to obtain this press, which is {1}", _id, to);
+        }
+        else if (from == Dir.Down && to == Dir.Up || from == Dir.Up && to == Dir.Left || from == Dir.Right && to == Dir.Down)
+        {
             _expectedPresses.Add(from);
+            Debug.LogFormat("[Simon Shorts #{0}] Using the diagram, the position of the flashing color is used to obtain this press, which is {1}", _id, from);
+        }
         else
             throw new InvalidOperationException("Something went wrong in AddStage().");
 
-        Debug.LogFormat("[Simon Shorts #{0}] I expect the following inputs: {1}", _id, _expectedPresses.Join(", "));
+        Debug.LogFormat("[Simon Shorts #{0}] The full sequence of inputs expected is now: {1}", _id, _expectedPresses.Join(", "));
         _pressesEntered = 0;
     }
 
@@ -139,30 +206,50 @@ public class SimonShortsScript : MonoBehaviour
     {
         if(_isSolved || _pressesEntered >= _expectedPresses.Count)
             return;
-
-        if(d == _expectedPresses[_pressesEntered])
+        flasherRunning = false;
+        cooldown = 3f;
+        if (d == _expectedPresses[_pressesEntered])
         {
-            Debug.LogFormat("[Simon Shorts #{0}] You correctly pressed {1}.", _id, d);
-            if(++_pressesEntered == _expectedPresses.Count)
+            Debug.LogFormat("[Simon Shorts #{0}] You correctly pressed {1} for press #{2} on stage {3}.", _id, d, _pressesEntered + 1, _animations.Count);
+            StopCoroutine(flashRunner);
+            if (++_pressesEntered >= _expectedPresses.Count)
             {
-                _stage++;
-
-                if(_stage >= 5)
+                
+                if(_animations.Count >= stagesRequired)
                 {
-                    Debug.LogFormat("[Simon Shorts #{0}] Module solved!", _id);
-                    Audio.PlayGameSoundAtTransform(KMSoundOverride.SoundEffect.CorrectChime, transform);
+                    Debug.LogFormat("[Simon Shorts #{0}] You cleared enough stages. Module solved!", _id);
                     Module.HandlePass();
                     _isSolved = true;
+                    interactable = false;
+                    StartCoroutine(PlaySolveAnim());
+                }
+                else
+                {
+                    AddStage();
+                    flashRunner = RunFlashes();
                 }
             }
         }
         else
         {
-            Debug.LogFormat("[Simon Shorts #{0}] You pressed {1}, but I expected {2}. Strike! Resetting inputs...", _id, d, _expectedPresses[_pressesEntered]);
+            Debug.LogFormat("[Simon Shorts #{0}] You pressed {1}, but I expected {2} for press #{3} on stage {4}. Strike! Resetting inputs...", _id, d, _expectedPresses[_pressesEntered], _pressesEntered + 1, _animations.Count);
 
             Module.HandleStrike();
 
             _pressesEntered = 0;
+        }
+    }
+
+    IEnumerator PlaySolveAnim()
+    {
+        var stringRefs = new[] { "Up", "Down", "Left", "Right" };
+        for (var t = 0; t < 1; t++)
+        {
+            for (var x = 0; x < 4; x++)
+            {
+                yield return new WaitForSeconds(0.2f);
+                mAudio.PlaySoundAtTransform(stringRefs[x], transform);
+            }
         }
     }
 
@@ -242,7 +329,6 @@ public class SimonShortsScript : MonoBehaviour
 
         if(pathID == -1)
             throw new InvalidOperationException("Something went wrong in MakeAnimate().");
-
         return StartCoroutine(Animate(pathID, reverse));
     }
 
@@ -263,6 +349,7 @@ public class SimonShortsScript : MonoBehaviour
                 break;
             Vector3 pos = Vector3.Lerp(path[(int)lerp], path[(int)lerp + 1], lerp % 1f);
             Spark.transform.localPosition = pos;
+            //Spark.transform.localScale = Vector3.one * (1f - (Time.time - time) / dur);
             yield return null;
         }
 
@@ -280,29 +367,54 @@ public class SimonShortsScript : MonoBehaviour
 
 
 #pragma warning disable 414
-    private const string TwitchHelpMessage = "Use \"!{0} ULRD\" to press the up, left, right, and down button.";
+    private readonly string TwitchHelpMessage = "\"!{0} press ULRD\" [presses the button corresponding to the direction up, left, right, and down, respectively, \"press\" is optional] \"!{0} colourblind/colorblind\" [Toggles colorblind mode.]";
 #pragma warning restore 414
 
     IEnumerator ProcessTwitchCommand(string command)
     {
-        if(Regex.IsMatch(command, @"^[ULRD\s]+$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        if (Regex.IsMatch(command, @"^colou?rblind$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
         {
             yield return null;
-            foreach(char c in command.ToLowerInvariant())
+            colorblindDetected ^= true;
+            HandleColorblindMode();
+        }
+        else if (Regex.IsMatch(command, @"^(press\s)?[ULRD\s]+$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            var cmdModified = command.ToLowerInvariant().Replace("press", "").Trim().Split();
+            var buttonsToPress = new List<KMSelectable>();
+            foreach (string cmdPart in cmdModified)
             {
-                if(c == 'u')
-                    Buttons[0].OnInteract();
-                else if(c == 'l')
-                    Buttons[1].OnInteract();
-                else if(c == 'r')
-                    Buttons[2].OnInteract();
-                else if(c == 'd')
-                    Buttons[3].OnInteract();
-                else
-                    continue;
+                var breakLoop = false;
+                foreach (char chrDir in cmdPart)
+                {
+                    var idx = "ulrd".IndexOf(chrDir);
+                    if (idx == -1)
+                    {
+                        yield return string.Format("sendtochaterror The given direction \"{0}\" is not a valid direction!", chrDir);
+                        yield break;
+                    }
+                    if (_expectedPresses[buttonsToPress.Count] != ToDir(idx))
+                    {
+                        if (buttonsToPress.Any())
+                            yield return string.Format("strikemessage by pressing {0} after {1} correct press(es) in the command provided!", ToDir(idx).ToString(), buttonsToPress.Count);
+                        breakLoop = true;
+                    }
+                    buttonsToPress.Add(Buttons[idx]);
+                    if (breakLoop)
+                        break;
+                }
+                if (breakLoop)
+                    break;
+            }
+
+            yield return null;
+            foreach (KMSelectable button in buttonsToPress)
+            {
+                button.OnInteract();
                 yield return new WaitForSeconds(0.1f);
             }
-            yield return "solve";
+            if (_isSolved)
+                yield return "solve";
         }
     }
 
@@ -310,10 +422,8 @@ public class SimonShortsScript : MonoBehaviour
     {
         while(!_isSolved)
         {
-            if(_pressesEntered >= _expectedPresses.Count)
-                yield return true;
-            else
-                yield return ProcessTwitchCommand(_expectedPresses[_pressesEntered].ToString()[0].ToString());
+            Buttons[ToIntFromDir(_expectedPresses[_pressesEntered])].OnInteract();
+            yield return new WaitForSeconds(0.1f);
         }
     }
 }
